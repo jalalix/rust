@@ -1,0 +1,13 @@
+[package]
+name = "jalalix"
+version = "0.1.0"
+edition = "2021"
+authors = ["Hossein Maklavani"]
+license = "MIT"
+description = "Jalali (Persian / Shamsi) calendar library — pure Rust, no dependencies"
+repository = "https://github.com/maklavani/jalalix"
+readme = "README.md"
+keywords = ["jalali", "persian", "shamsi", "calendar", "date"]
+categories = ["date-and-time"]
+
+[dependencies]
