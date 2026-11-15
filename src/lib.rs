@@ -1570,6 +1570,7 @@ fn days_from_civil(y: i32, m: i32, d: i32) -> i64 {
 // Builds a Unix timestamp (ms) from Gregorian UTC date-time components.
 fn date_to_timestamp(y: i32, m: i32, d: i32, h: i32, mi: i32, s: i32, ms: i32) -> i64 {
     let days = days_from_civil(y, m, d);
+
     days * DATE_LENGTH
         + (h as i64) * 3_600_000
         + (mi as i64) * 60_000
@@ -1586,9 +1587,11 @@ fn is_gregorian_leap(y: i32) -> bool {
 fn day_of_year_gregorian(y: i32, m: i32, d: i32) -> i32 {
     const CUM: [i32; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
     let mut n = CUM[(m - 1) as usize] + d;
+
     if m > 2 && is_gregorian_leap(y) {
         n += 1;
     }
+
     n
 }
 
@@ -1625,12 +1628,15 @@ fn parse_datetime(s: &str) -> Result<i64, String> {
     // YYYY-MM-DDTHH:mm[:ss[.sss]][Z|±HH:mm]
     if s.len() >= 16 && (s.contains('T') || s.contains(' ')) {
         let norm = s.replace(' ', "T");
+
         let (date_part, rest) = norm
             .split_once('T')
             .ok_or_else(|| format!("invalid date: {s}"))?;
+
         if date_part.len() != 10 {
             return Err(format!("invalid date: {s}"));
         }
+
         let y: i32 = date_part[0..4]
             .parse()
             .map_err(|_| format!("invalid date: {s}"))?;
@@ -1707,7 +1713,6 @@ fn parse_datetime(s: &str) -> Result<i64, String> {
         }
 
         let ms: i32 = ms_digits.parse().unwrap_or(0);
-
         let utc = date_to_timestamp(y, m, d, h, mi, sec, ms) - (offset_mins as i64) * 60_000;
 
         return Ok(utc);
@@ -1729,12 +1734,15 @@ fn is_valid_jalali_civil_date(year: i32, month: i32, day: i32) -> bool {
     if year < 1 || !(1..=12).contains(&month) || day < 1 {
         return false;
     }
+
     if month <= 6 {
         return day <= 31;
     }
+
     if month <= 11 {
         return day <= 30;
     }
+
     let is_leap = JalaliX::checkLeapYear(year);
     day <= if is_leap { 30 } else { 29 }
 }
@@ -1743,7 +1751,9 @@ fn is_valid_gregorian_date(year: i32, month: i32, day: i32) -> bool {
     if !(1..=12).contains(&month) || day < 1 {
         return false;
     }
+
     let is_leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+
     let days_in_month = [
         31,
         if is_leap { 29 } else { 28 },
@@ -1758,12 +1768,14 @@ fn is_valid_gregorian_date(year: i32, month: i32, day: i32) -> bool {
         30,
         31,
     ];
+
     day <= days_in_month[(month - 1) as usize]
 }
 
 fn strip_fractional_seconds(s: &str) -> String {
     let b = s.as_bytes();
     let mut i = 0;
+
     while i + 8 < b.len() {
         if b[i].is_ascii_digit()
             && b[i + 1].is_ascii_digit()
@@ -1791,20 +1803,25 @@ fn strip_fractional_seconds(s: &str) -> String {
 
 fn parse_numeric_timestamp_string(s: &str) -> Option<i64> {
     let trimmed = s.trim();
+
     if trimmed.is_empty() {
         return None;
     }
+
     let bytes = trimmed.as_bytes();
     let mut i = 0;
+
     if bytes.first() == Some(&b'+') || bytes.first() == Some(&b'-') {
         i = 1;
     }
+
     if i >= bytes.len() || !bytes[i].is_ascii_digit() {
         return None;
     }
     while i < bytes.len() && bytes[i].is_ascii_digit() {
         i += 1;
     }
+
     if i < bytes.len() && bytes[i] == b'.' {
         i += 1;
         if i >= bytes.len() || !bytes[i].is_ascii_digit() {
@@ -1814,9 +1831,11 @@ fn parse_numeric_timestamp_string(s: &str) -> Option<i64> {
             i += 1;
         }
     }
+
     if i != bytes.len() {
         return None;
     }
+
     trimmed.parse::<f64>().ok().map(|f| f.trunc() as i64)
 }
 
@@ -1825,14 +1844,18 @@ fn normalize_query_timestamp(
     options: Option<&JalaliNormalizeOptions>,
 ) -> Option<String> {
     let mut ts = timestamp;
+
     if ts > 9_999_999_999 {
         ts /= 1000;
     }
+
     if ts <= 0 {
         return None;
     }
+
     let jalali_opts = options.and_then(|o| o.to_jalali_options());
     let mut d = JalaliX::create(ts * 1000);
+
     if let Some(ref o) = jalali_opts {
         if let Some(ref tz) = o.timezone {
             if let Ok(next) = d.setTimezone(Some(tz.as_str())) {
@@ -1840,10 +1863,12 @@ fn normalize_query_timestamp(
             }
         }
     }
+
     let fmt = JalaliFormatOptions {
         calendar: Calendar::Gregorian,
         persian_digits: false,
     };
+
     Some(d.formatWithOptions("YYYY-MM-DD HH:mm:ss", &fmt))
 }
 
@@ -1851,6 +1876,7 @@ fn normalize_query_date_str(s: &str, options: Option<JalaliNormalizeOptions>) ->
     let lowered_invalid = s.eq_ignore_ascii_case("invalid date");
     let lower = s.to_ascii_lowercase();
     let nanish = lower == "nan" || lower.contains("nan");
+
     if s == "null" || s.is_empty() || s == "undefined" || lowered_invalid || nanish {
         return QueryDateValue::Null;
     }
@@ -1863,6 +1889,7 @@ fn normalize_query_date_str(s: &str, options: Option<JalaliNormalizeOptions>) ->
     }
 
     let digits = strip_fractional_seconds(&JalaliX::fromPersian(s));
+
     let Some((year, month, day, hour, minute, second)) = parse_loose_query_date(&digits) else {
         return QueryDateValue::Str(digits);
     };
@@ -1905,14 +1932,17 @@ fn normalize_query_date_str(s: &str, options: Option<JalaliNormalizeOptions>) ->
 
 fn strip_timezone_suffix(s: &str) -> &str {
     let s = s.trim_end();
+
     if s.ends_with('Z') || s.ends_with('z') {
         return &s[..s.len() - 1];
     }
+
     if let Some(idx) = s.rfind('+') {
         if idx > 10 && is_offset_suffix(&s[idx..]) {
             return &s[..idx];
         }
     }
+
     if let Some(idx) = s.rfind('-') {
         // Avoid the date separators (YYYY-MM-DD); offset appears after optional time.
         if idx > 10 && is_offset_suffix(&s[idx..]) {
@@ -1924,9 +1954,11 @@ fn strip_timezone_suffix(s: &str) -> &str {
 
 fn is_offset_suffix(suffix: &str) -> bool {
     let digits: Vec<char> = suffix.chars().filter(|c| c.is_ascii_digit()).collect();
+
     if digits.len() == 4 {
         return true;
     }
+
     let rest = suffix.trim_start_matches('+').trim_start_matches('-');
     let bytes = rest.as_bytes();
     (bytes.len() == 5 && bytes[2] == b':') || bytes.len() == 4
