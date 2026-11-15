@@ -1,4 +1,4 @@
-// JalaliX — Jalali (Persian / Shamsi) calendar on a Unix-millisecond timestamp.
+// JalaliX - Jalali (Persian / Shamsi) calendar on a Unix-millisecond timestamp.
 //
 // Pure Rust (`std` only). IANA timezones via a vendored/OS TZif reader
 // ([`tz`]); see [`JalaliX::setTimezone`].
@@ -72,6 +72,7 @@ const MONTHS_GREGORIAN_NAMES: [&str; 12] = [
 ];
 
 const PERSIAN_NUMBERS: [char; 10] = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
+const ARABIC_NUMBERS: [char; 10] = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
 const AM: &str = "ق.ظ.";
 const PM: &str = "ب.ظ.";
 const AM_GREGORIAN: &str = "AM";
@@ -82,6 +83,41 @@ const PM_GREGORIAN: &str = "PM";
 pub struct JalaliOptions {
     // IANA timezone id or alias (e.g. `"UTC"`, `"Asia/Tehran"`, `"local"`).
     pub timezone: Option<String>,
+}
+
+// Options for [`JalaliX::normalizeQueryDate`].
+#[derive(Debug, Clone, Default)]
+pub struct JalaliNormalizeOptions {
+    // IANA timezone id or alias (e.g. `"UTC"`, `"Asia/Tehran"`, `"local"`).
+    pub timezone: Option<String>,
+    // Minimum Jalali year treated as Jalali (inclusive). Default: `1`.
+    pub jalali_year_min: Option<i32>,
+    // Maximum Jalali year treated as Jalali (inclusive). Default: `1899`.
+    pub jalali_year_max: Option<i32>,
+}
+
+impl JalaliNormalizeOptions {
+    fn to_jalali_options(&self) -> Option<JalaliOptions> {
+        self.timezone.as_ref().map(|tz| JalaliOptions {
+            timezone: Some(tz.clone()),
+        })
+    }
+}
+
+// Mixed/dynamic input (and output) value for [`JalaliX::normalizeQueryDate`].
+// Mirrors the loose query-value shapes handled by the TypeScript / Python / PHP ports.
+#[derive(Debug, Clone, PartialEq)]
+pub enum QueryDateValue {
+    // `null` sentinel (always normalizes to `Null`).
+    Null,
+    // Passed through unchanged (there is no "object"/"array" concept in this crate).
+    Bool(bool),
+    // Integer unix timestamp (seconds or milliseconds) or integral numeric string.
+    Int(i64),
+    // Floating-point unix timestamp or numeric string.
+    Float(f64),
+    // Any other string (sentinel keyword, Jalali/Gregorian date text, or junk).
+    Str(String),
 }
 
 // Calendar selection for formatting.
@@ -302,9 +338,9 @@ impl JalaliX {
         out
     }
 
-    // Converts Persian numerals (۰-۹) to Western numerals (0-9) in a string.
+    // Converts Persian (۰-۹) and Arabic-Indic (٠-٩) numerals to Western numerals (0-9).
     //
-    // * `str` - The string containing Persian numerals.
+    // * `str` - The string containing Persian or Arabic-Indic numerals.
     //
     // Returns the string with Western numerals.
     pub fn fromPersian(str: &str) -> String {
@@ -313,12 +349,44 @@ impl JalaliX {
         for ch in str.chars() {
             if let Some(idx) = PERSIAN_NUMBERS.iter().position(|&p| p == ch) {
                 out.push((b'0' + idx as u8) as char);
+            } else if let Some(idx) = ARABIC_NUMBERS.iter().position(|&p| p == ch) {
+                out.push((b'0' + idx as u8) as char);
             } else {
                 out.push(ch);
             }
         }
 
         out
+    }
+
+    // Soft-normalizes loose query / form date inputs into a Gregorian `YYYY-MM-DD HH:mm:ss` string.
+    //
+    // See [`JalaliNormalizeOptions`] for timezone and Jalali year-band settings (default `1…1899`).
+    // Sentinels and non-positive timestamps map to [`QueryDateValue::Null`]; other non-string /
+    // non-numeric variants pass through unchanged.
+    pub fn normalizeQueryDate(
+        value: QueryDateValue,
+        options: Option<JalaliNormalizeOptions>,
+    ) -> QueryDateValue {
+        match value {
+            QueryDateValue::Null => QueryDateValue::Null,
+            QueryDateValue::Bool(b) => QueryDateValue::Bool(b),
+            QueryDateValue::Int(n) => match normalize_query_timestamp(n, options.as_ref()) {
+                Some(s) => QueryDateValue::Str(s),
+                None => QueryDateValue::Null,
+            },
+            QueryDateValue::Float(f) => {
+                if f.is_nan() {
+                    return QueryDateValue::Null;
+                }
+                let ts = f.trunc() as i64;
+                match normalize_query_timestamp(ts, options.as_ref()) {
+                    Some(s) => QueryDateValue::Str(s),
+                    None => QueryDateValue::Null,
+                }
+            }
+            QueryDateValue::Str(s) => normalize_query_date_str(&s, options),
+        }
     }
 
     // Compares two JalaliX dates.
@@ -621,7 +689,7 @@ impl JalaliX {
     }
 
     // Splits a millisecond timeline into Gregorian calendar and time parts
-    // (treating the value as a civil “as-if-UTC” timeline — used for wall ms too).
+    // (treating the value as a civil “as-if-UTC” timeline - used for wall ms too).
     //
     // Returns `(year, month 1-12, day, hour, min, sec, ms)`.
     fn utc_parts(timestamp_ms: i64) -> (i32, i32, i32, i32, i32, i32, i32) {
@@ -1653,9 +1721,225 @@ fn parse_datetime(s: &str) -> Result<i64, String> {
     Err(format!("invalid date: {s}"))
 }
 
-// Parses a Jalali `YYYY/MM/DD` or `YYYY-MM-DD` string (optional time).
+fn is_date_sep(b: u8) -> bool {
+    b == b'/' || b == b'-' || b == b'.'
+}
+
+fn is_valid_jalali_civil_date(year: i32, month: i32, day: i32) -> bool {
+    if year < 1 || !(1..=12).contains(&month) || day < 1 {
+        return false;
+    }
+    if month <= 6 {
+        return day <= 31;
+    }
+    if month <= 11 {
+        return day <= 30;
+    }
+    let is_leap = JalaliX::checkLeapYear(year);
+    day <= if is_leap { 30 } else { 29 }
+}
+
+fn is_valid_gregorian_date(year: i32, month: i32, day: i32) -> bool {
+    if !(1..=12).contains(&month) || day < 1 {
+        return false;
+    }
+    let is_leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let days_in_month = [
+        31,
+        if is_leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    day <= days_in_month[(month - 1) as usize]
+}
+
+fn strip_fractional_seconds(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i + 8 < b.len() {
+        if b[i].is_ascii_digit()
+            && b[i + 1].is_ascii_digit()
+            && b[i + 2] == b':'
+            && b[i + 3].is_ascii_digit()
+            && b[i + 4].is_ascii_digit()
+            && b[i + 5] == b':'
+            && b[i + 6].is_ascii_digit()
+            && b[i + 7].is_ascii_digit()
+            && b.get(i + 8) == Some(&b'.')
+        {
+            let mut end = i + 9;
+            while end < b.len() && b[end].is_ascii_digit() {
+                end += 1;
+            }
+            let mut out = String::with_capacity(s.len() - (end - i - 8));
+            out.push_str(&s[..i + 8]);
+            out.push_str(&s[end..]);
+            return out;
+        }
+        i += 1;
+    }
+    s.to_string()
+}
+
+fn parse_numeric_timestamp_string(s: &str) -> Option<i64> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let bytes = trimmed.as_bytes();
+    let mut i = 0;
+    if bytes.first() == Some(&b'+') || bytes.first() == Some(&b'-') {
+        i = 1;
+    }
+    if i >= bytes.len() || !bytes[i].is_ascii_digit() {
+        return None;
+    }
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i < bytes.len() && bytes[i] == b'.' {
+        i += 1;
+        if i >= bytes.len() || !bytes[i].is_ascii_digit() {
+            return None;
+        }
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+    }
+    if i != bytes.len() {
+        return None;
+    }
+    trimmed.parse::<f64>().ok().map(|f| f.trunc() as i64)
+}
+
+fn normalize_query_timestamp(
+    timestamp: i64,
+    options: Option<&JalaliNormalizeOptions>,
+) -> Option<String> {
+    let mut ts = timestamp;
+    if ts > 9_999_999_999 {
+        ts /= 1000;
+    }
+    if ts <= 0 {
+        return None;
+    }
+    let jalali_opts = options.and_then(|o| o.to_jalali_options());
+    let mut d = JalaliX::create(ts * 1000);
+    if let Some(ref o) = jalali_opts {
+        if let Some(ref tz) = o.timezone {
+            if let Ok(next) = d.setTimezone(Some(tz.as_str())) {
+                d = next;
+            }
+        }
+    }
+    let fmt = JalaliFormatOptions {
+        calendar: Calendar::Gregorian,
+        persian_digits: false,
+    };
+    Some(d.formatWithOptions("YYYY-MM-DD HH:mm:ss", &fmt))
+}
+
+fn normalize_query_date_str(s: &str, options: Option<JalaliNormalizeOptions>) -> QueryDateValue {
+    let lowered_invalid = s.eq_ignore_ascii_case("invalid date");
+    let lower = s.to_ascii_lowercase();
+    let nanish = lower == "nan" || lower.contains("nan");
+    if s == "null" || s.is_empty() || s == "undefined" || lowered_invalid || nanish {
+        return QueryDateValue::Null;
+    }
+
+    if let Some(ts) = parse_numeric_timestamp_string(s) {
+        return match normalize_query_timestamp(ts, options.as_ref()) {
+            Some(out) => QueryDateValue::Str(out),
+            None => QueryDateValue::Null,
+        };
+    }
+
+    let digits = strip_fractional_seconds(&JalaliX::fromPersian(s));
+    let Some((year, month, day, hour, minute, second)) = parse_loose_query_date(&digits) else {
+        return QueryDateValue::Str(digits);
+    };
+
+    let jalali_year_min = options
+        .as_ref()
+        .and_then(|o| o.jalali_year_min)
+        .unwrap_or(1);
+    let jalali_year_max = options
+        .as_ref()
+        .and_then(|o| o.jalali_year_max)
+        .unwrap_or(1899);
+
+    if (jalali_year_min..=jalali_year_max).contains(&year)
+        && is_valid_jalali_civil_date(year, month, day)
+    {
+        let jalali_str = format!(
+            "{:04}/{:02}/{:02} {:02}:{:02}:{:02}",
+            year, month, day, hour, minute, second
+        );
+        let jalali_opts = options.as_ref().and_then(|o| o.to_jalali_options());
+        if let Ok(mut parsed) = JalaliX::parseJalaliWithOptions(&jalali_str, jalali_opts) {
+            let fmt = JalaliFormatOptions {
+                calendar: Calendar::Gregorian,
+                persian_digits: false,
+            };
+            return QueryDateValue::Str(parsed.formatWithOptions("YYYY-MM-DD HH:mm:ss", &fmt));
+        }
+    }
+
+    if is_valid_gregorian_date(year, month, day) {
+        return QueryDateValue::Str(format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            year, month, day, hour, minute, second
+        ));
+    }
+
+    QueryDateValue::Str(digits)
+}
+
+fn strip_timezone_suffix(s: &str) -> &str {
+    let s = s.trim_end();
+    if s.ends_with('Z') || s.ends_with('z') {
+        return &s[..s.len() - 1];
+    }
+    if let Some(idx) = s.rfind('+') {
+        if idx > 10 && is_offset_suffix(&s[idx..]) {
+            return &s[..idx];
+        }
+    }
+    if let Some(idx) = s.rfind('-') {
+        // Avoid the date separators (YYYY-MM-DD); offset appears after optional time.
+        if idx > 10 && is_offset_suffix(&s[idx..]) {
+            return &s[..idx];
+        }
+    }
+    s
+}
+
+fn is_offset_suffix(suffix: &str) -> bool {
+    let digits: Vec<char> = suffix.chars().filter(|c| c.is_ascii_digit()).collect();
+    if digits.len() == 4 {
+        return true;
+    }
+    let rest = suffix.trim_start_matches('+').trim_start_matches('-');
+    let bytes = rest.as_bytes();
+    (bytes.len() == 5 && bytes[2] == b':') || bytes.len() == 4
+}
+
+// Like [`parse_jalali_string`] but allows optional `Z` or `±HH:mm` offset suffix (for normalizeQueryDate).
+fn parse_loose_query_date(s: &str) -> Option<(i32, i32, i32, i32, i32, i32)> {
+    parse_jalali_string(strip_timezone_suffix(s.trim()))
+}
+
+// Parses a Jalali `YYYY/MM/DD` or `YYYY-MM-DD` or `YYYY.MM.DD` string (optional time).
 fn parse_jalali_string(s: &str) -> Option<(i32, i32, i32, i32, i32, i32)> {
-    // ^(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$
+    // ^(\d{4})[/-.](\d{1,2})[/-.](\d{1,2})(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$
     let bytes = s.as_bytes();
 
     if bytes.len() < 8 {
@@ -1682,14 +1966,14 @@ fn parse_jalali_string(s: &str) -> Option<(i32, i32, i32, i32, i32, i32)> {
 
     let year = take_digits(&mut i, 4, 4)?;
 
-    if i >= bytes.len() || (bytes[i] != b'/' && bytes[i] != b'-') {
+    if i >= bytes.len() || !is_date_sep(bytes[i]) {
         return None;
     }
 
     i += 1;
     let month = take_digits(&mut i, 1, 2)?;
 
-    if i >= bytes.len() || (bytes[i] != b'/' && bytes[i] != b'-') {
+    if i >= bytes.len() || !is_date_sep(bytes[i]) {
         return None;
     }
 
@@ -1867,5 +2151,127 @@ mod tests {
         let d = JalaliX::create(1_740_484_800_000);
         let d2 = d.setTimezone(Some("utc")).unwrap();
         assert_eq!(d2.getTimezone(), "UTC");
+    }
+
+    #[test]
+    fn from_persian_arabic_indic_digits() {
+        assert_eq!(JalaliX::fromPersian("١٤٠٣/١٢/٠٧"), "1403/12/07");
+    }
+
+    #[test]
+    fn parse_jalali_dot_separator() {
+        let mut d = JalaliX::parseJalali("1403.12.07").unwrap();
+        assert_eq!(d.toISODate(Calendar::Gregorian), "2025-02-25");
+    }
+
+    #[test]
+    fn normalize_query_date_sentinels_and_timestamps() {
+        assert_eq!(
+            JalaliX::normalizeQueryDate(QueryDateValue::Null, None),
+            QueryDateValue::Null
+        );
+        assert_eq!(
+            JalaliX::normalizeQueryDate(QueryDateValue::Str("null".into()), None),
+            QueryDateValue::Null
+        );
+        assert_eq!(
+            JalaliX::normalizeQueryDate(QueryDateValue::Str("".into()), None),
+            QueryDateValue::Null
+        );
+        assert_eq!(
+            JalaliX::normalizeQueryDate(QueryDateValue::Str("undefined".into()), None),
+            QueryDateValue::Null
+        );
+        assert_eq!(
+            JalaliX::normalizeQueryDate(QueryDateValue::Str("Invalid Date".into()), None),
+            QueryDateValue::Null
+        );
+        assert_eq!(
+            JalaliX::normalizeQueryDate(QueryDateValue::Str("NaN".into()), None),
+            QueryDateValue::Null
+        );
+        assert_eq!(
+            JalaliX::normalizeQueryDate(QueryDateValue::Int(0), None),
+            QueryDateValue::Null
+        );
+        assert_eq!(
+            JalaliX::normalizeQueryDate(QueryDateValue::Int(-1), None),
+            QueryDateValue::Null
+        );
+
+        let seconds = 1_740_430_800_i64;
+        let utc_opts = Some(JalaliNormalizeOptions {
+            timezone: Some("UTC".into()),
+            ..Default::default()
+        });
+        let tehran_opts = Some(JalaliNormalizeOptions {
+            timezone: Some("Asia/Tehran".into()),
+            ..Default::default()
+        });
+        assert_eq!(
+            JalaliX::normalizeQueryDate(QueryDateValue::Int(seconds), utc_opts.clone()),
+            QueryDateValue::Str("2025-02-24 21:00:00".into())
+        );
+        assert_eq!(
+            JalaliX::normalizeQueryDate(QueryDateValue::Int(seconds * 1000), tehran_opts.clone()),
+            QueryDateValue::Str("2025-02-25 00:30:00".into())
+        );
+    }
+
+    #[test]
+    fn normalize_query_date_jalali_and_gregorian() {
+        let utc_opts = Some(JalaliNormalizeOptions {
+            timezone: Some("UTC".into()),
+            ..Default::default()
+        });
+        assert_eq!(
+            JalaliX::normalizeQueryDate(QueryDateValue::Str("1403/12/07".into()), utc_opts.clone()),
+            QueryDateValue::Str("2025-02-25 00:00:00".into())
+        );
+        assert_eq!(
+            JalaliX::normalizeQueryDate(
+                QueryDateValue::Str("۱۴۰۳-۱۲-۰۷ 14:30:00".into()),
+                utc_opts.clone()
+            ),
+            QueryDateValue::Str("2025-02-25 14:30:00".into())
+        );
+        assert_eq!(
+            JalaliX::normalizeQueryDate(QueryDateValue::Str("2025.02.25".into()), None),
+            QueryDateValue::Str("2025-02-25 00:00:00".into())
+        );
+        assert_eq!(
+            JalaliX::normalizeQueryDate(
+                QueryDateValue::Str("2025-02-25 12:30:45.123Z".into()),
+                None
+            ),
+            QueryDateValue::Str("2025-02-25 12:30:45".into())
+        );
+        assert_eq!(
+            JalaliX::normalizeQueryDate(QueryDateValue::Str("not-a-date".into()), None),
+            QueryDateValue::Str("not-a-date".into())
+        );
+
+        assert!(matches!(
+            JalaliX::normalizeQueryDate(QueryDateValue::Str("1200/01/01".into()), utc_opts.clone()),
+            QueryDateValue::Str(_)
+        ));
+        assert!(matches!(
+            JalaliX::normalizeQueryDate(QueryDateValue::Str("1800/01/01".into()), utc_opts.clone()),
+            QueryDateValue::Str(_)
+        ));
+
+        assert_eq!(
+            JalaliX::normalizeQueryDate(QueryDateValue::Str("2025-01-01".into()), None),
+            QueryDateValue::Str("2025-01-01 00:00:00".into())
+        );
+
+        let widened = Some(JalaliNormalizeOptions {
+            timezone: Some("UTC".into()),
+            jalali_year_min: Some(1),
+            jalali_year_max: Some(3000),
+        });
+        let normal = JalaliX::normalizeQueryDate(QueryDateValue::Str("2025-01-01".into()), None);
+        let wide = JalaliX::normalizeQueryDate(QueryDateValue::Str("2025-01-01".into()), widened);
+        assert_ne!(normal, wide);
     }
 }

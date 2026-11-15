@@ -169,7 +169,7 @@ fn parse_tzif(data: &[u8]) -> Option<TzDatabase> {
     off += _ttisutcnt;
 
     if version == 0 || version == b'\0' {
-        // Pure v1 — re-parse from the start of the body with 32-bit times.
+        // Pure v1 - re-parse from the start of the body with 32-bit times.
         return parse_tzif_body_v1(data);
     }
 
@@ -297,7 +297,7 @@ fn parse_tzif_body_v1(data: &[u8]) -> Option<TzDatabase> {
 // when no sign, but `<…>` form uses explicit signed offset after the name).
 fn parse_posix_time_offset(s: &str) -> Option<(i32, &str)> {
     // Returns (seconds east of UTC from the *numeric* field as written after the
-    // abbreviation — POSIX treats that number as hours *west* of UTC unless the
+    // abbreviation - POSIX treats that number as hours *west* of UTC unless the
     // abbr was quoted with `<>` and we apply the same convention: std offset in
     // the TZ string is "time to add to local to get UTC" i.e. west-positive.
     // We convert to east-of-UTC by negating.)
@@ -379,7 +379,7 @@ fn skip_posix_abbr(s: &str) -> Option<&str> {
 
         if i < 3 {
             // Allow shorter only if we already had `<>` form; alpha form needs ≥3
-            // per POSIX, but zoneinfo sometimes uses shorter — accept ≥1 letter.
+            // per POSIX, but zoneinfo sometimes uses shorter - accept ≥1 letter.
             if i == 0 {
                 return None;
             }
@@ -427,7 +427,7 @@ fn posix_offset_at(tz: &str, unix_sec: i64) -> Option<i32> {
     };
 
     if !after_dst_off.starts_with(',') {
-        // No rules -> treat as always std (or always dst if only names?) — use std.
+        // No rules -> treat as always std (or always dst if only names?) - use std.
         return Some(std_off);
     }
 
@@ -516,7 +516,7 @@ fn rule_to_unix(year: i32, rule: &str, offset_at_transition: i32) -> Option<i64>
         days_from_civil(year, 1, 1) * 86400 + day_of_year as i64 * 86400 + time_secs as i64;
 
     // Transition time is wall time in the *previous* offset (std for start, dst for end
-    // per POSIX — we pass the offset that applies just before the transition).
+    // per POSIX - we pass the offset that applies just before the transition).
     Some(local_secs - offset_at_transition as i64)
 }
 
@@ -538,7 +538,7 @@ fn is_leap(y: i32) -> bool {
 }
 
 fn parse_m_rule(year: i32, rest: &str) -> Option<i32> {
-    // m.n.d — month m, n-th weekday d (0=Sun), n=5 means last
+    // m.n.d - month m, n-th weekday d (0=Sun), n=5 means last
     let mut parts = rest.split('.');
     let m: i32 = parts.next()?.parse().ok()?;
     let n: i32 = parts.next()?.parse().ok()?;
