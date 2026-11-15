@@ -7,7 +7,7 @@ Jalali (Persian / Shamsi) calendar on top of a millisecond Unix timestamp. Pure 
 
 ```toml
 [dependencies]
-jalalix = "0.1"
+jalalix = "0.2.0"
 ```
 
 ```rust
@@ -27,7 +27,7 @@ JalaliX::parseJalali("1403/12/07").unwrap().toISODate(jalalix::Calendar::Gregori
 
 ```toml
 [dependencies]
-jalalix = "0.1"
+jalalix = "0.2.0"
 ```
 
 ```rust
